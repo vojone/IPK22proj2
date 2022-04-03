@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include  <iomanip>
+#include <ctime>
 
 #define UNSET -1
 #define SNAPLEN 65536
@@ -16,12 +17,27 @@
 #define LINE_LEN 16
 #define UNPRINTABLE_CHAR '.'
 
+
+typedef enum { 
+    OTHER = 0x0000, 
+    IPV4 = 0x0800, 
+    ARP = 0x0806,
+    IPV6 = 0x86DD, 
+} 
+ether_type_t;
+
 typedef struct settings {
     char *iname;
     int port_num;
     bool tcp, udp, arp, icmp;
     int num;
 } settings_t;
+
+typedef struct frame_info {
+    u_char dst_addr[6];
+    u_char src_addr[6];
+    u_char type[2];
+} frame_info_t;
 
 
 int get_interfaces(pcap_if_t **interfaces, char *error_buff) {
@@ -194,6 +210,23 @@ void print_line_as_chars(const u_char *pkt, uint line_cnt, uint cur_byte) {
 }
 
 
+void get_frame_info(const u_char *pkt, frame_info_t *info) {
+    for(int i = 0; i < 6; i++) {
+        info->dst_addr[i] = pkt[i];
+    }
+
+
+    for(int i = 0; i < 6; i++) {
+        info->src_addr[i] = pkt[i + 6];
+    }
+
+    for(int i = 0; i < 2; i++) {
+        info->type[i] = pkt[i + 6 + 6];
+    }
+}
+
+
+
 int main(int argc, char* argv[]) {
     settings_t settings;
     init_settings(&settings);
@@ -240,6 +273,46 @@ int main(int argc, char* argv[]) {
     while(true) {
         pkt = pcap_next(pcap_ptr, &pkt_header);
         //std::cout << pkt_header.len << "\n";
+
+        frame_info_t info;
+
+        get_frame_info(pkt, &info);
+
+        char ts_buffer1[128];
+        char ts_buffer2[128];
+        std::tm gtime_buffer;
+
+        std::tm *gtime = gmtime(&(pkt_header.ts.tv_sec));
+        memcpy(&gtime_buffer, gtime, sizeof(std::tm));
+        std::tm *ltime = localtime(&(pkt_header.ts.tv_sec));
+        std::strftime(ts_buffer1, 128, "%Y-%m-%dT%H:%M:%S", ltime);
+        
+        snprintf(ts_buffer2, 128, ".%ld%+d:00", pkt_header.ts.tv_usec, ltime->tm_hour - gtime_buffer.tm_hour);
+        std::cout << "ts: " << std::dec << ts_buffer1 << ts_buffer2 << std::endl;
+        std::cout << "len: " << std::dec << pkt_header.len;
+
+        std::cout << std::endl;
+
+        std::cout << "dst.: ";
+        for(int i = 0; i < 6; i++) {
+            print_as_hex(info.dst_addr[i], false, sizeof(char));
+        }
+
+        std::cout << std::endl;
+
+        std::cout << "src.: ";
+        for(int i = 0; i < 6; i++) {
+            print_as_hex(info.src_addr[i], false, sizeof(char));
+        }
+        std::cout << std::endl;
+
+        std::cout << "type.: ";
+        for(int i = 0; i < 2; i++) {
+            print_as_hex(info.type[i], false, sizeof(char));
+        }
+
+        // print_as_hex((short)info.type, true, sizeof(short));
+        std::cout << std::endl;
         
         uint i = 0, line_cnt = i;
         for(; i < pkt_header.len; i++, line_cnt++) {
@@ -263,6 +336,7 @@ int main(int argc, char* argv[]) {
         print_padding(i);
         print_line_as_chars(pkt, line_cnt, i);
 
+        std::cout << std::endl;
         std::cout << std::endl;
     }
 
