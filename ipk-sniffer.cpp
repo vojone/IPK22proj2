@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <string>
 #include <ctime>
+#include <signal.h>
 
 #define UNSET -1
 
@@ -30,24 +31,13 @@
 #define UNPRINTABLE_CHAR '.' //Substitution character for unprintable chars
 
 
-#define DST_MAC_SIZE 6 //Size of field with DST MAC adress in sniffed frame
+#define MAC_ADDR_SIZE 6 //Size of field with MAC adress in bytes
 
-#define SRC_MAC_SIZE 6 //Size of field with SRC MAC adress in sniffed frame
+#define IPV4_ADDR_SIZE 4  //Size of field with IPV4 adress in bytes
 
+#define IPV6_ADDR_SIZE 16  //Size of field with IPV6 adress in bytes
 
 #define T_BUFF_SIZE 128 //Size of temporary buffer for converting timestamp to string
-
-
-/**
- * @brief Ether types of catched frames
- */
-typedef enum { 
-    OTHER = 0x0000, 
-    IPV4 = 0x0800, 
-    ARP = 0x0806,
-    IPV6 = 0x86DD, 
-} 
-ether_type_t;
 
 
 /**
@@ -55,8 +45,7 @@ ether_type_t;
  */
 typedef enum {
     TCP_INDEX, UDP_INDEX, ARP_INDEX, ICMP_INDEX, PROTO_NUM
-}
-proto_indexes_t;
+} proto_indexes_t;
 
 
 /**
@@ -65,19 +54,103 @@ proto_indexes_t;
 typedef struct settings {
     char *iname;
     int port_num;
-    bool protocols[PROTO_NUM], all_disabled, udp_and_tcp_disabled;
+    bool protocols[PROTO_NUM], all_disabled, all_wport_disabled;
     size_t num;
 } settings_t;
 
 
 /**
- * @brief Structure holds general info about catched frame
+ * @brief Ether-types of catched frames
  */
-typedef struct frame_info {
-    u_char dst_addr[DST_MAC_SIZE]; /**< Source address */
-    u_char src_addr[SRC_MAC_SIZE]; /**< Destination address */
-    ushort type; /**< Type of the frame */
-} frame_info_t;
+typedef enum { 
+    IPV4 = 0x0800, 
+    ARP = 0x0806,
+    IPV6 = 0x86DD, 
+} ether_type_t;
+
+/**
+ * @brief 
+ */
+typedef struct eth_frame_hdr {
+    const u_char dst_addr[MAC_ADDR_SIZE]; /**< Source address */
+    const u_char src_addr[MAC_ADDR_SIZE]; /**< Destination address */
+    const u_short type; /**< Type of the frame */
+} eth_frame_hdr_t;
+
+
+#define IPV4_PROLOG_SIZE 8
+
+typedef enum {
+    ICMP = 1,
+    TCP = 6,
+    UDP = 17,
+} ipv4_transport_protols_t;
+
+typedef struct ipv4_hdr {
+    const u_char prolog[IPV4_PROLOG_SIZE];
+    const u_char ttl;
+    const u_char protocol;
+    const u_short checksum;
+    const u_char src_addr[IPV4_ADDR_SIZE];
+    const u_char dst_addr[IPV4_ADDR_SIZE];
+} ipv4_hdr_t;
+
+
+#define IPV6_PROLOG_SIZE 6
+
+typedef enum {
+    HOP_BY_HOP_OPT_HDR = 0 ,
+    TCP_HDR = 6,
+    UDP_HDR = 17,
+} ipv6_next_hdr_t;
+
+typedef struct ipv6_hdr {
+    const u_char prolog[IPV6_PROLOG_SIZE];
+    const u_char next_hdr;
+    const u_char max_hops;
+    const u_char src_addr[IPV6_ADDR_SIZE];
+    const u_char dst_addr[IPV6_ADDR_SIZE];
+} ipv6_hdr_t;
+
+
+typedef struct tcp_hdr {
+    const u_short src_port;
+    const u_short dst_port;
+    const u_char* rest;
+} tcp_hdr_t;
+
+
+typedef struct udp_hdr {
+    const u_short src_port;
+    const u_short dst_port;
+    const u_char* rest;
+} udp_hdr_t;
+
+
+/**
+ * @brief Correctly frees all resources held by given pointer, garbage collecting function
+ * @param reg_mode If it is true, function is in registration mode - it save given pointers
+ * @param ifs Pointer to interface list
+ * @param pcap_ptr Pointer to pcap structure
+ */
+void free_resources(bool reg_mode, pcap_if_t *ifs, pcap_t *pcap_ptr) {
+    static pcap_if_t *interfaces = NULL;
+    static pcap_t *pcap = NULL;
+
+    if(reg_mode) {
+        interfaces = ifs;
+        pcap = pcap_ptr;
+    }
+    else {
+        if(interfaces) {
+            pcap_freealldevs(interfaces);
+        }
+
+        if(pcap) {
+            pcap_close(pcap);
+        }
+    }
+}
 
 
 /**
@@ -93,6 +166,8 @@ int get_interfaces(pcap_if_t **interfaces, char *error_buff) {
         std::cerr << "Error: " << error_buff << std::endl;
         return EXIT_FAILURE;
     }
+
+    free_resources(true, *interfaces, NULL); /**< Adding pointer to interface list to garbage collection function */
     
     return EXIT_SUCCESS;
 }
@@ -105,11 +180,25 @@ int get_interfaces(pcap_if_t **interfaces, char *error_buff) {
 void print_all_interfaces(pcap_if_t *interfaces) {
     pcap_if_t *current;
 
+    std::cerr << std::endl;
+
     for(current = interfaces; current; current = current->next) {
-        std::cerr << current->name << "  ";
+        std::cerr << current->name;
+        std::cerr << std::endl;
     }
 
     std::cerr << std::endl;
+}
+
+
+/**
+ * @brief Frees resources to minimize memory leaks and then ends program with given code
+ * @param exit_code With this code will be program ended
+ */
+void safe_exit(int exit_code) {
+    free_resources(false, NULL, NULL);
+
+    exit(exit_code);
 }
 
 
@@ -118,11 +207,9 @@ void print_all_interfaces(pcap_if_t *interfaces) {
  * @param interfaces Linked list with interfaces to be printed
  */
 void bad_interface_abort(pcap_if_t *interfaces) {
-    std::cerr << "Active interfaces: " << std::endl;
-
     print_all_interfaces(interfaces);
 
-    exit(EXIT_FAILURE);
+    safe_exit(EXIT_FAILURE);
 }
 
 
@@ -137,12 +224,12 @@ unsigned int get_port_number(char *port_num_param) {
     int port_num = strtol(port_num_param, &rest, 10);
     if(*rest != '\0') {
         std::cerr << "Invalid parameter of -p option (port number)!" <<  std::endl;
-        exit(EXIT_FAILURE);
+        safe_exit(EXIT_FAILURE);
     }
 
     if(port_num < 0 || port_num > 65536) {
         std::cerr << "Parameter of -p option must be valid port number!" << std::endl;
-        exit(EXIT_FAILURE);
+        safe_exit(EXIT_FAILURE);
     }
 
     return (unsigned int)port_num;
@@ -160,12 +247,12 @@ unsigned int get_number_opt(char *number_param) {
     int num = strtoul(number_param, &rest, 10);
     if(*rest != '\0') {
         std::cerr << "Invalid parameter of -n option!" << std::endl;
-        exit(EXIT_FAILURE);
+        safe_exit(EXIT_FAILURE);
     }
 
     if(num < 0) {
         std::cerr << "Parameter of -n option must be positive integer!" << std::endl;
-        exit(EXIT_FAILURE);
+        safe_exit(EXIT_FAILURE);
     }
 
     return num;
@@ -186,7 +273,7 @@ void init_settings(settings_t *settings) {
     }
 
     settings->all_disabled = true;
-    settings->udp_and_tcp_disabled = true;
+    settings->all_wport_disabled = true;
 }
 
 
@@ -196,18 +283,20 @@ void init_settings(settings_t *settings) {
  * @param interfaces Linked list with active interfaces (to print messages properly)
  */
 void unrecognized_option_abort(char** argv, pcap_if_t *interfaces) {
+    const char * option = argv[optind-1];
+
     if(optopt == 'i') {
         std::cerr << "Missing param of interface specifier!" << std::endl;
         bad_interface_abort(interfaces);
     }
     else if(optopt == 'n' || optopt == 'p') {
-        std::cerr << "Parameter is required after!" << argv[optind-1] <<  std::endl;
+        std::cerr << "Parameter is required after " << option << std::endl;
     }
     else {
-        std::cerr << "Unrecognized option: " << argv[optind-1] <<  std::endl;
+        std::cerr << "Unrecognized option: " << option <<  std::endl;
     }
 
-    exit(EXIT_FAILURE);
+    safe_exit(EXIT_FAILURE);
 }
 
 
@@ -217,14 +306,14 @@ void unrecognized_option_abort(char** argv, pcap_if_t *interfaces) {
  */
 void update_general_settings(settings_t *settings) {
     settings->all_disabled = true;
-    settings->udp_and_tcp_disabled = true;
+    settings->all_wport_disabled = true;
 
     for(size_t i = 0; i < PROTO_NUM; i++) {
         if(settings->protocols[i]) {
             settings->all_disabled = false;
 
             if(i == TCP_INDEX || i == UDP_INDEX) {
-                settings->udp_and_tcp_disabled = false;
+                settings->all_wport_disabled = false;
             }
         }
     }
@@ -341,7 +430,7 @@ void print_as_hex(int num, bool wprefix, size_t b_size) {
  * @param short_gap Normal gap
  * @return const char Chosen gap
  */
-const char* choose_gap(uint i, const char* long_gap, const char* short_gap) {
+const char* choose_gap(size_t i, const char* long_gap, const char* short_gap) {
     return ((i + 1) % SECTION_LEN == 0) ? long_gap : short_gap;
 }
 
@@ -351,7 +440,7 @@ const char* choose_gap(uint i, const char* long_gap, const char* short_gap) {
  * @note Used to make ouput more beautiful
  * @param cur_byte Offset of last printed byte (the last byte of frame)
  */
-void print_padding(uint cur_byte) {
+void print_padding(size_t cur_byte) {
     while(cur_byte % LINE_LEN != 0) {
         std::cout << "  "; //Instead of byte
 
@@ -368,7 +457,7 @@ void print_padding(uint cur_byte) {
  * @param line_cnt Number of printed bytes in one row
  * @param cur_byte Offset of last printed byte (in hexa representation)
  */
-void print_line_as_chars(const u_char *pkt, uint line_cnt, uint cur_byte) {
+void print_line_as_chars(const u_char *pkt, size_t line_cnt, size_t cur_byte) {
     for(size_t i = cur_byte - line_cnt; i < cur_byte; i++) {
         if(!isprint(pkt[i])) {
             std::cout << UNPRINTABLE_CHAR;
@@ -383,80 +472,91 @@ void print_line_as_chars(const u_char *pkt, uint line_cnt, uint cur_byte) {
 
 
 /**
- * @brief Fills frame info structure with information about the frame
+ * @brief Fills frame info structure with information about the frame (from header)
  * @note Supports only ethernet packets
  * @param pkt Frame (packet) with information
- * @param info Pointer to structure, that should be filled
+ * @param hdr Pointer to pointer to structure, that should be filled
  */
-void get_frame_info(const u_char *pkt, frame_info_t *info) {
-    for(size_t i = 0; i < DST_MAC_SIZE; i++) {
-        info->dst_addr[i] = pkt[i];
-    }
-
-
-    for(size_t i = 0; i < SRC_MAC_SIZE; i++) {
-        info->src_addr[i] = pkt[i + SRC_MAC_SIZE];
-    }
-
-    //Converting EtherType to readable representation
-    info->type = ntohs((short)pkt[DST_MAC_SIZE + SRC_MAC_SIZE]);
+void get_eth_header(const u_char *frame, eth_frame_hdr_t **hdr) {
+    *hdr = (eth_frame_hdr_t *)frame;
 }
 
+
 /**
- * @brief Prints general (interesting) information about the frame (packet)
- * @param pkt_header Pointer to structure with frame header information
- * @param info Pointer to structure with information about the frame
+ * @brief 
+ * @param addr 
  */
-void print_header_info(pcap_pkthdr *pkt_header, frame_info_t *info) {
+void print_mac_addr(const u_char *addr) {
+    for(size_t i = 0; i < MAC_ADDR_SIZE; i++) {
+        if(i > 0) {
+            std::cout << ":";
+        }
+
+        print_as_hex(addr[i], false, sizeof(char));
+    }
+}
+
+
+/**
+ * @brief 
+ * @param addr 
+ */
+void print_ip_addr(const u_char *addr) {
+    for(size_t i = 0; i < 4; i++) {
+        if(i > 0) {
+            std::cout << ".";
+        }
+
+        std::cout << +addr[i];
+    }
+}
+
+
+/**
+ * @brief Prints general (interesting) information about the ethernet frame
+ * @param pkt_header Pointer to structure with frame header information
+ * @param eth_hdr Pointer to structure with information about the frame
+ */
+void print_header_info(pcap_pkthdr *pkt_header, eth_frame_hdr_t *eth_hdr) {
     char ts_buffer[T_BUFF_SIZE];
     std::tm gtime_buffer;
 
     std::tm *gtime = gmtime(&(pkt_header->ts.tv_sec));
     gtime_buffer = *gtime;
     std::tm *ltime = localtime(&(pkt_header->ts.tv_sec));
-    std::strftime(ts_buffer, T_BUFF_SIZE, "%Y-%m-%dT%H:%M:%S", ltime);
 
-    std::cout << "ts: " << std::dec << ts_buffer;
+    std::strftime(ts_buffer, T_BUFF_SIZE, "%Y-%m-%dT%H:%M:%S", ltime);
+    std::cout << "timestamp: " << std::dec << ts_buffer;
 
     short t_offset = ltime->tm_hour - gtime_buffer.tm_hour;
-    snprintf(ts_buffer, T_BUFF_SIZE, ".%ld%+d:00", pkt_header->ts.tv_usec, t_offset);
-
+    std::string usec_str(std::to_string(pkt_header->ts.tv_usec/(double)1e6));
+    usec_str.erase(0, 1); /**< Removing 0 from start (it always be in format 0. ...) */
+    
+    snprintf(ts_buffer, T_BUFF_SIZE, "%s%+d:00", usec_str.c_str(), t_offset);
     std::cout << ts_buffer << std::endl;
 
-
-    std::cout << "len: " << std::dec << pkt_header->len << std::endl;
-
-
-    std::cout << "dst.: ";
-    for(size_t i = 0; i < 6; i++) {
-        print_as_hex(info->dst_addr[i], false, sizeof(char));
-    }
-
+    std::cout << "src MAC: ";
+    print_mac_addr(eth_hdr->src_addr);
     std::cout << std::endl;
 
-
-    std::cout << "src.: ";
-    for(size_t i = 0; i < 6; i++) {
-        print_as_hex(info->src_addr[i], false, sizeof(char));
-    }
+    std::cout << "dst MAC: ";
+    print_mac_addr(eth_hdr->dst_addr);
     std::cout << std::endl;
 
+    std::cout << "frame len: " << std::dec << pkt_header->len << std::endl;
 
-    std::cout << "type.: ";
-    print_as_hex(info->type, false, sizeof(short));
+    //Additional
+    std::cout << "ethertype.: ";
+    print_as_hex(ntohs(eth_hdr->type), true, sizeof(short));
     std::cout << std::endl;
 }
 
 
 void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
     bool recognized = true;
-
     bool is_udp_or_tcp = i == TCP_INDEX || i == UDP_INDEX;
     bool port_active = settings->port_num != UNSET;
-    bool all_transp_disabled = settings->udp_and_tcp_disabled;
-    bool uni_port_filter = is_udp_or_tcp && port_active && all_transp_disabled;
-
-    if(settings->protocols[i] || uni_port_filter) {
+    if(settings->protocols[i]) {
         if(!filter_str->empty()) {
             filter_str->append("or ");
         }
@@ -505,24 +605,21 @@ void create_filter_str(std::string *filter_str, settings_t *settings) {
     for(size_t i = 0; i < PROTO_NUM; i++) {
         setting_to_str(filter_str, settings, i);
     }
+
+    if(settings->all_wport_disabled && settings->port_num != UNSET) {
+        if(!filter_str->empty()) {
+            filter_str->append("or ");
+        }
+
+        filter_str->append("port ");
+        filter_str->append(std::to_string(settings->port_num));
+    }
 }
 
 
-void sniff_packet(pcap_t *pcap_ptr) {
-    const u_char *pkt;
-    pcap_pkthdr pkt_header;
-
-    pkt = pcap_next(pcap_ptr, &pkt_header);
-    //std::cout << pkt_header.len << "\n";
-
-    frame_info_t info;
-
-    get_frame_info(pkt, &info);
-
-    print_header_info(&pkt_header, &info);
-    
-    uint i = 0, line_cnt = i;
-    for(; i < pkt_header.len; i++, line_cnt++) {
+void dump_pkt(pcap_pkthdr *pkt_header, const u_char *pkt) {
+    size_t i = 0, line_cnt = i;
+    for(; i < pkt_header->len; i++, line_cnt++) {
         if(line_cnt % LINE_LEN == 0) {
             if(i > 0) {
                 print_line_as_chars(pkt, line_cnt, i);
@@ -548,15 +645,93 @@ void sniff_packet(pcap_t *pcap_ptr) {
 }
 
 
+void sniff_packet(pcap_t *pcap_ptr) {
+    const u_char *pkt;
+    pcap_pkthdr pkt_header;
+
+    pkt = pcap_next(pcap_ptr, &pkt_header);
+    //std::cout << pkt_header.len << "\n";
+
+    eth_frame_hdr_t *eth_hdr;
+    get_eth_header(pkt, &eth_hdr);
+
+    print_header_info(&pkt_header, eth_hdr);
+
+    u_short ether_type = ntohs(eth_hdr->type);
+    if(ether_type == IPV4) {
+        ipv4_hdr_t *ipv4_hdr = (ipv4_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t)])); 
+
+        std::cout << "ipv4 protocol: ";
+        print_as_hex(ipv4_hdr->protocol, false, sizeof(char));
+        std::cout << std::endl;
+
+        std::cout << std::dec << "src IP: ";
+        print_ip_addr(ipv4_hdr->src_addr);
+        std::cout << std::endl;
+
+        std::cout << std::dec << "dst IP: ";
+        print_ip_addr(ipv4_hdr->dst_addr);
+        std::cout << std::endl;
+
+        if(ipv4_hdr->protocol == TCP) {
+            tcp_hdr_t *tcp_hdr = (tcp_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t) + sizeof(ipv4_hdr_t)])); //TODO
+
+            std::cout << "src port: ";
+            std::cout << std::dec << ntohs(tcp_hdr->src_port);
+            std::cout << std::endl;
+
+            std::cout << "dst port: ";
+            std::cout << std::dec << ntohs(tcp_hdr->dst_port);
+            std::cout << std::endl;
+        }
+        else if(ipv4_hdr->protocol == UDP) {
+            udp_hdr_t *udp_hdr = (udp_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t) + sizeof(ipv4_hdr_t)]));
+
+            std::cout << "src port: ";
+            std::cout << std::dec << ntohs(udp_hdr->src_port);
+            std::cout << std::endl;
+
+            std::cout << "dst port: ";
+            std::cout << std::dec << ntohs(udp_hdr->dst_port);
+            std::cout << std::endl;
+        }
+    }
+    else if(ether_type == ARP) {
+
+    }
+    else if(ether_type == IPV6) {
+
+    }
+
+    dump_pkt(&pkt_header, pkt);
+
+}
+
+
+/**
+ * @brief Handler for unexpected termination by SIGINT signal
+ * @param signal_number 
+ */
+void termination_handler(int signal_number) {
+    (void)signal_number;
+
+    free_resources(false, NULL, NULL); /**< Correctly frees all registered resources */
+
+    exit(EXIT_SUCCESS);
+}
+
+
 int main(int argc, char* argv[]) {
+    signal(SIGINT, termination_handler);
+
     settings_t settings;
     init_settings(&settings);
 
     char err_buff[PCAP_ERRBUF_SIZE];
-    pcap_if_t *interfaces = NULL;
 
+    pcap_if_t *interfaces = NULL;
     if(get_interfaces(&interfaces, err_buff)) {
-        return EXIT_FAILURE;
+        safe_exit(EXIT_FAILURE);
     }
 
     parse_ops(argc, argv, &settings, interfaces);
@@ -575,11 +750,12 @@ int main(int argc, char* argv[]) {
     pcap_t *pcap_ptr = pcap_open_live(settings.iname, BUFSIZ, 
                                       PCAP_OPENFLAG_PROMISCUOUS, 1000, 
                                       err_buff);
-
     if(!pcap_ptr) {
         std::cerr << "Error while opening: " << err_buff << std::endl;
-        return EXIT_FAILURE;
+        safe_exit(EXIT_FAILURE);
     }
+
+    free_resources(true, interfaces, pcap_ptr);
 
     std::string filter_str;
     create_filter_str(&filter_str, &settings);
@@ -588,20 +764,19 @@ int main(int argc, char* argv[]) {
     if(pcap_compile(pcap_ptr, &filter, filter_str.c_str(), 0, net) < 0) {
         std::cerr << "Error while compiling filter! ";
         std::cerr << pcap_geterr(pcap_ptr) << std::endl;
-        return EXIT_FAILURE;
+        safe_exit(EXIT_FAILURE);
     }
 
     if(pcap_setfilter(pcap_ptr, &filter) < 0) {
         std::cerr << "Error while setting filter! ";
         std::cerr << pcap_geterr(pcap_ptr) << std::endl;
-        return EXIT_FAILURE;
+        safe_exit(EXIT_FAILURE);
     }
 
-    for(int pkt_cnt = 0; true; pkt_cnt++) { //TODO
+    for(int frame_cnt = 0; true; frame_cnt++) { //TODO
         sniff_packet(pcap_ptr);
     }
 
-    pcap_close(pcap_ptr);
 
-    return EXIT_SUCCESS;
+    safe_exit(EXIT_SUCCESS);
 }
