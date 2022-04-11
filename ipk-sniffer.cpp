@@ -60,7 +60,7 @@ typedef struct settings {
 
 
 /**
- * @brief Ether-types of catched frames
+ * @brief Ether-types of catched frames 
  */
 typedef enum { 
     IPV4 = 0x0800, 
@@ -69,7 +69,8 @@ typedef enum {
 } ether_type_t;
 
 /**
- * @brief 
+ * @brief Contains fields of ethernet header, sniffer supports only ethernet frames
+ * @note By mapping these structurer to sniffed packet, header can be easily parsed
  */
 typedef struct eth_frame_hdr {
     const u_char dst_addr[MAC_ADDR_SIZE]; /**< Source address */
@@ -78,14 +79,24 @@ typedef struct eth_frame_hdr {
 } eth_frame_hdr_t;
 
 
-#define IPV4_PROLOG_SIZE 8
-
+/**
+ * @brief Enumeration of chosen numbers, that specify transport protocol
+ * @note These numbers can be find in proto field (IPv4) or next_header (IPv6)
+ * @see https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+ */
 typedef enum {
     ICMP = 1,
     TCP = 6,
     UDP = 17,
-} ipv4_transport_protols_t;
+} transport_prot_t;
 
+
+#define IPV4_PROLOG_SIZE 8 //The amount of first bytes in ipv4 header that are not parsed
+
+/**
+ * @brief Represents ipv4 header and its fields (implemented according to @see RFC791 )
+ * @note For easier parsing of sniffed frame
+ */
 typedef struct ipv4_hdr {
     const u_char prolog[IPV4_PROLOG_SIZE];
     const u_char ttl;
@@ -96,14 +107,11 @@ typedef struct ipv4_hdr {
 } ipv4_hdr_t;
 
 
-#define IPV6_PROLOG_SIZE 6
-
-typedef enum {
-    HOP_BY_HOP_OPT_HDR = 0 ,
-    TCP_HDR = 6,
-    UDP_HDR = 17,
-} ipv6_next_hdr_t;
-
+#define IPV6_PROLOG_SIZE 6 //The amount of first bytes in ipv6 header that are not parsed
+ 
+/**
+ * @brief Represents ipv6 header and its fields ( @see RFC 2460 )
+ */
 typedef struct ipv6_hdr {
     const u_char prolog[IPV6_PROLOG_SIZE];
     const u_char next_hdr;
@@ -113,13 +121,18 @@ typedef struct ipv6_hdr {
 } ipv6_hdr_t;
 
 
+/**
+ * @brief Contains all important fields of TCP header ( @see RFC 793 ) 
+ */
 typedef struct tcp_hdr {
     const u_short src_port;
     const u_short dst_port;
     const u_char* rest;
 } tcp_hdr_t;
 
-
+/**
+ * @brief Contains all important field of UDP header ( @see RFC 768 ) 
+ */
 typedef struct udp_hdr {
     const u_short src_port;
     const u_short dst_port;
@@ -128,7 +141,7 @@ typedef struct udp_hdr {
 
 
 /**
- * @brief Correctly frees all resources held by given pointer, garbage collecting function
+ * @brief Correctly frees all resources held by given pointer, sort of garbage collecting function
  * @param reg_mode If it is true, function is in registration mode - it save given pointers
  * @param ifs Pointer to interface list
  * @param pcap_ptr Pointer to pcap structure
@@ -353,7 +366,6 @@ void resolve_option(int opt, char** argv, settings_t *sets, pcap_if_t *ifs) {
         sets->protocols[UDP_INDEX] = true;
         break;
 
-
     case 'a':
         sets->protocols[ARP_INDEX] = true;
         break;
@@ -472,19 +484,32 @@ void print_line_as_chars(const u_char *pkt, size_t line_cnt, size_t cur_byte) {
 
 
 /**
- * @brief Fills frame info structure with information about the frame (from header)
- * @note Supports only ethernet packets
- * @param pkt Frame (packet) with information
+ * @brief Fills given structure with information included in packet (it does something like "parsing")
+ * @tparam HDR_TYPE Type (structure), that contains all fields specified by standards
+ * @param start Start index, that specifies, where header starts
+ * @param len Total length of sniffed frame
+ * @param frame Pointer to array with sniffed frame
  * @param hdr Pointer to pointer to structure, that should be filled
+ * @return true Parsing if probably done correctly (depends on start index and used structure)
+ * @return false There are not enough bytes to fill the structure (probably bad structure was chosen)
  */
-void get_eth_header(const u_char *frame, eth_frame_hdr_t **hdr) {
-    *hdr = (eth_frame_hdr_t *)frame;
+template <typename HDR_TYPE>
+bool get_hdr(size_t *start, size_t len, const u_char *frame, HDR_TYPE **hdr) {
+    if(len - (*start) < sizeof(HDR_TYPE) || len <= *start || *start < 0) {
+        return false;
+    }
+
+    *hdr = (HDR_TYPE *)(&(frame[*start]));
+    *start += sizeof(HDR_TYPE);
+
+    return true;
 }
 
 
+
 /**
- * @brief 
- * @param addr 
+ * @brief Prints MAC address in typical format (xx:xx:xx:xx:xx:xx) including newline
+ * @param addr Pointer to adress (array of bytes), that should be printed
  */
 void print_mac_addr(const u_char *addr) {
     for(size_t i = 0; i < MAC_ADDR_SIZE; i++) {
@@ -494,26 +519,53 @@ void print_mac_addr(const u_char *addr) {
 
         print_as_hex(addr[i], false, sizeof(char));
     }
+
+    std::cout << std::endl;
 }
 
 
 /**
- * @brief 
- * @param addr 
+ * @brief Prints IPv4 adress as it is typical (d.d.d.d)
+ * @param addr Pointer to adress (array of bytes), that should be printed
  */
-void print_ip_addr(const u_char *addr) {
-    for(size_t i = 0; i < 4; i++) {
+void print_ipv4_addr(const u_char *addr) {
+    for(size_t i = 0; i < IPV4_ADDR_SIZE; i++) {
         if(i > 0) {
             std::cout << ".";
         }
 
         std::cout << +addr[i];
     }
+
+    std::cout << std::endl;
 }
 
 
 /**
- * @brief Prints general (interesting) information about the ethernet frame
+ * @brief Prints IPv6 adress according to one of possible formats specified in RFC 4291
+ * @param addr Adress to be printed (array of bytes)
+ */
+void print_ipv6_addr(const u_char *addr) {
+    for(size_t i = 0; i < IPV6_ADDR_SIZE; i++) {
+        if(i > 0 && i % 2 == 0) {
+            std::cout << ":";
+        }
+
+        if(i < IPV6_ADDR_SIZE - 1 && addr[i] == 0 && addr[i + 1] == 0) {
+            std::cout << "0";
+            i++;
+        }
+        else {
+            print_as_hex(addr[i], false, sizeof(char));
+        }
+    }
+
+    std::cout << std::endl;
+}
+
+
+/**
+ * @brief Prints genera information about the ethernet frame
  * @param pkt_header Pointer to structure with frame header information
  * @param eth_hdr Pointer to structure with information about the frame
  */
@@ -521,6 +573,7 @@ void print_header_info(pcap_pkthdr *pkt_header, eth_frame_hdr_t *eth_hdr) {
     char ts_buffer[T_BUFF_SIZE];
     std::tm gtime_buffer;
 
+    //Formatting of timestamp (it is formatted according to RFC3339)
     std::tm *gtime = gmtime(&(pkt_header->ts.tv_sec));
     gtime_buffer = *gtime;
     std::tm *ltime = localtime(&(pkt_header->ts.tv_sec));
@@ -535,23 +588,28 @@ void print_header_info(pcap_pkthdr *pkt_header, eth_frame_hdr_t *eth_hdr) {
     snprintf(ts_buffer, T_BUFF_SIZE, "%s%+d:00", usec_str.c_str(), t_offset);
     std::cout << ts_buffer << std::endl;
 
+    //Printing adresses
     std::cout << "src MAC: ";
     print_mac_addr(eth_hdr->src_addr);
-    std::cout << std::endl;
 
     std::cout << "dst MAC: ";
     print_mac_addr(eth_hdr->dst_addr);
-    std::cout << std::endl;
 
     std::cout << "frame len: " << std::dec << pkt_header->len << std::endl;
 
-    //Additional
-    std::cout << "ethertype.: ";
+    //Additional information about ethertype
+    std::cout << "ethertype.: "; //TODO
     print_as_hex(ntohs(eth_hdr->type), true, sizeof(short));
     std::cout << std::endl;
 }
 
 
+/**
+ * @brief Converts setting with specified protocol filter to corresponding filter string
+ * @param filter_str Output string
+ * @param settings Structure to be converted (typicaly got by parsing of arguments)
+ * @param i Index of protocol in setting structure array
+ */
 void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
     bool recognized = true;
     bool is_udp_or_tcp = i == TCP_INDEX || i == UDP_INDEX;
@@ -569,7 +627,7 @@ void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
             filter_str->append("arp ");
             break;
         case ICMP_INDEX:
-            filter_str->append("icmp ");
+            filter_str->append("icmp or icmp6 ");
             break;
         case TCP_INDEX:
             filter_str->append("tcp ");
@@ -595,6 +653,11 @@ void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
 }
 
 
+/**
+ * @brief Converts setting structure to string containing filter to be compiled with pcap library
+ * @param filter_str Ouput string, that is erased and filled with filter
+ * @param settings Structure to be converted (typicaly got by parsing of arguments)
+ */
 void create_filter_str(std::string *filter_str, settings_t *settings) {
     filter_str->clear();
 
@@ -617,17 +680,22 @@ void create_filter_str(std::string *filter_str, settings_t *settings) {
 }
 
 
+/**
+ * @brief Prints all bytes of frame in form that is required by assignment
+ * @param pkt_header Header of the sniffed frame
+ * @param pkt Pointer to content of the frame
+ */
 void dump_pkt(pcap_pkthdr *pkt_header, const u_char *pkt) {
     size_t i = 0, line_cnt = i;
     for(; i < pkt_header->len; i++, line_cnt++) {
         if(line_cnt % LINE_LEN == 0) {
             if(i > 0) {
-                print_line_as_chars(pkt, line_cnt, i);
+                print_line_as_chars(pkt, line_cnt, i); /**< After each line, bytes are printed in ASCII */
                 line_cnt = 0;
                 std::cout << std::endl;
             }
 
-            print_as_hex((int)i, true, sizeof(short));
+            print_as_hex((int)i, true, sizeof(short)); /**< Printing bytes as hex */
             std::cout << ":  ";
         }
 
@@ -645,6 +713,114 @@ void dump_pkt(pcap_pkthdr *pkt_header, const u_char *pkt) {
 }
 
 
+/**
+ * @brief Converts port_number to human readability representation (through ntohs)
+ *        and prints it to stdout with newline at the end
+ * @param port_num Port number (netshort) to be converted
+ */
+void print_port(const u_short port_num) {
+    std::cout << std::dec << ntohs(port_num) << std::endl;
+}
+
+
+/**
+ * @brief Prints details included in IPv4 header and optionally in other headers of higher layers
+ * @param start_index Index where IPv4 header should start
+ * @param flen Frame length
+ * @param pkt Pointer to arra with frame content
+ */
+void print_ipv4_details(size_t *start_index, size_t flen, const u_char *pkt) {
+    ipv4_hdr_t *ipv4_header;
+
+    if(get_hdr<ipv4_hdr_t>(start_index, flen, pkt, &ipv4_header)) {
+        std::cout << "ipv4 protocol: "; //TODO
+        print_as_hex(ipv4_header->protocol, false, sizeof(char));
+        std::cout << std::endl;
+
+        std::cout << std::dec << "src IP: ";
+        print_ipv4_addr(ipv4_header->src_addr);
+
+        std::cout << std::dec << "dst IP: ";
+        print_ipv4_addr(ipv4_header->dst_addr);
+
+        //Higher layers
+        if(ipv4_header->protocol == TCP) {
+            tcp_hdr_t *tcp_header;
+
+            if(get_hdr<tcp_hdr_t>(start_index, flen, pkt, &tcp_header)) {
+                std::cout << "src port: ";
+                print_port(tcp_header->src_port);
+
+                std::cout << "dst port: ";
+                print_port(tcp_header->dst_port);
+            }
+        }
+        else if(ipv4_header->protocol == UDP) {
+            udp_hdr_t *udp_header;
+
+            if(get_hdr<udp_hdr_t>(start_index, flen, pkt, &udp_header)) {
+                std::cout << "src port: ";
+                print_port(udp_header->src_port);
+
+                std::cout << "dst port: ";
+                print_port(udp_header->dst_port);
+            }
+        }
+    }
+}
+
+
+/**
+ * @brief Prints details included in IPv6 header and optionally in other headers of higher layers
+ * @param start_index Index where IPv6 header should start
+ * @param flen Frame length
+ * @param pkt Pointer to arra with frame content
+ */
+void print_ipv6_details(size_t *start_index, size_t flen, const u_char *pkt) {
+    ipv6_hdr_t *ipv6_header;
+
+    if(get_hdr<ipv6_hdr_t>(start_index, flen, pkt, &ipv6_header)) {
+        std::cout << "ipv6 protocol: "; //TODO
+        print_as_hex(ipv6_header->next_hdr, false, sizeof(char));
+        std::cout << std::endl;
+
+        std::cout << std::dec << "src IP: ";
+        print_ipv6_addr(ipv6_header->src_addr);
+
+        std::cout << std::dec << "dst IP: ";
+        print_ipv6_addr(ipv6_header->dst_addr);
+
+        //Higher layers
+        if(ipv6_header->next_hdr == TCP) {
+            tcp_hdr_t *tcp_header;
+
+            if(get_hdr<tcp_hdr_t>(start_index, flen, pkt, &tcp_header)) {
+                std::cout << "src port: ";
+                print_port(tcp_header->src_port);
+
+                std::cout << "dst port: ";
+                print_port(tcp_header->dst_port);
+            }
+        }
+        else if(ipv6_header->next_hdr == UDP) {
+            udp_hdr_t *udp_header;
+
+            if(get_hdr<udp_hdr_t>(start_index, flen, pkt, &udp_header)) {
+                std::cout << "src port: ";
+                print_port(udp_header->src_port);
+
+                std::cout << "dst port: ";
+                print_port(udp_header->dst_port);
+            }
+        }
+    }
+}
+
+
+/**
+ * @brief Performs packet (frame) sniffing itself
+ * @param pcap_ptr Pointer to intialized pcap structure
+ */
 void sniff_packet(pcap_t *pcap_ptr) {
     const u_char *pkt;
     pcap_pkthdr pkt_header;
@@ -653,58 +829,24 @@ void sniff_packet(pcap_t *pcap_ptr) {
     //std::cout << pkt_header.len << "\n";
 
     eth_frame_hdr_t *eth_hdr;
-    get_eth_header(pkt, &eth_hdr);
 
-    print_header_info(&pkt_header, eth_hdr);
+    size_t start_index = 0;
+    size_t frame_len = pkt_header.caplen;
+    
+    //Print details contained in headers
+    if(get_hdr<eth_frame_hdr_t>(&start_index, frame_len, pkt, &eth_hdr)) {
+        print_header_info(&pkt_header, eth_hdr);
 
-    u_short ether_type = ntohs(eth_hdr->type);
-    if(ether_type == IPV4) {
-        ipv4_hdr_t *ipv4_hdr = (ipv4_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t)])); 
-
-        std::cout << "ipv4 protocol: ";
-        print_as_hex(ipv4_hdr->protocol, false, sizeof(char));
-        std::cout << std::endl;
-
-        std::cout << std::dec << "src IP: ";
-        print_ip_addr(ipv4_hdr->src_addr);
-        std::cout << std::endl;
-
-        std::cout << std::dec << "dst IP: ";
-        print_ip_addr(ipv4_hdr->dst_addr);
-        std::cout << std::endl;
-
-        if(ipv4_hdr->protocol == TCP) {
-            tcp_hdr_t *tcp_hdr = (tcp_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t) + sizeof(ipv4_hdr_t)])); //TODO
-
-            std::cout << "src port: ";
-            std::cout << std::dec << ntohs(tcp_hdr->src_port);
-            std::cout << std::endl;
-
-            std::cout << "dst port: ";
-            std::cout << std::dec << ntohs(tcp_hdr->dst_port);
-            std::cout << std::endl;
+        u_short ether_type = ntohs(eth_hdr->type);
+        if(ether_type == IPV4) {
+            print_ipv4_details(&start_index, frame_len, pkt);
         }
-        else if(ipv4_hdr->protocol == UDP) {
-            udp_hdr_t *udp_hdr = (udp_hdr_t *)(&(pkt[sizeof(eth_frame_hdr_t) + sizeof(ipv4_hdr_t)]));
-
-            std::cout << "src port: ";
-            std::cout << std::dec << ntohs(udp_hdr->src_port);
-            std::cout << std::endl;
-
-            std::cout << "dst port: ";
-            std::cout << std::dec << ntohs(udp_hdr->dst_port);
-            std::cout << std::endl;
+        else if(ether_type == IPV6) {
+            print_ipv6_details(&start_index, frame_len, pkt);
         }
-    }
-    else if(ether_type == ARP) {
-
-    }
-    else if(ether_type == IPV6) {
-
-    }
+    }   
 
     dump_pkt(&pkt_header, pkt);
-
 }
 
 
@@ -721,13 +863,66 @@ void termination_handler(int signal_number) {
 }
 
 
+/**
+ * @brief Initializes pcap structure to be used (including compiling and setting filter)
+ * @param pcap_ptr Pointer to pointer to pcap structure that will be filled with the adress of initialized pcap 
+ * @param settings Setting structure (from argument parsing)
+ * @param err_buff Buffer for error messaged
+ * @param interfaces Pointer to linked list with interfaces
+ * @note If any part of initialization is not succesfull, program is ended and error msg is printed
+ */
+void init_pcap(pcap_t **pcap_ptr, settings_t *settings, 
+               char *err_buff, pcap_if_t *interfaces) {
+
+    *pcap_ptr = NULL;
+
+    bpf_u_int32 mask;
+    bpf_u_int32 net;
+    bpf_program filter;
+
+    //Preparing of pcap_t structure is made due to pcap.h man pages
+    if(pcap_lookupnet(settings->iname, &net, &mask, err_buff) < 0) {
+        std::cerr << "Unable to find '" << settings->iname << "'! ";
+        std::cerr << err_buff << std::endl;
+        bad_interface_abort(interfaces);
+    }
+
+    *pcap_ptr = pcap_open_live(settings->iname, BUFSIZ, 
+                               PCAP_OPENFLAG_PROMISCUOUS, 1000, 
+                               err_buff);
+    if(!pcap_ptr) {
+        std::cerr << "Error while opening: " << err_buff << std::endl;
+        safe_exit(EXIT_FAILURE);
+    }
+
+    free_resources(true, interfaces, *pcap_ptr);
+
+    //Filter creation
+    std::string filter_str;
+    create_filter_str(&filter_str, settings);
+    //std::cout << filter_str << std::endl << std::flush;
+
+    if(pcap_compile(*pcap_ptr, &filter, filter_str.c_str(), 0, net) < 0) {
+        std::cerr << "Error while compiling filter! ";
+        std::cerr << pcap_geterr(*pcap_ptr) << std::endl;
+        safe_exit(EXIT_FAILURE);
+    }
+
+    if(pcap_setfilter(*pcap_ptr, &filter) < 0) {
+        std::cerr << "Error while setting filter! ";
+        std::cerr << pcap_geterr(*pcap_ptr) << std::endl;
+        safe_exit(EXIT_FAILURE);
+    }
+}
+
+
 int main(int argc, char* argv[]) {
     signal(SIGINT, termination_handler);
 
+    char err_buff[PCAP_ERRBUF_SIZE]; /**< Buffer for error messages (required by pcap functions) */
+
     settings_t settings;
     init_settings(&settings);
-
-    char err_buff[PCAP_ERRBUF_SIZE];
 
     pcap_if_t *interfaces = NULL;
     if(get_interfaces(&interfaces, err_buff)) {
@@ -736,47 +931,12 @@ int main(int argc, char* argv[]) {
 
     parse_ops(argc, argv, &settings, interfaces);
 
-    bpf_u_int32 mask;
-    bpf_u_int32 net;
-    bpf_program filter;
-
-    //Preparing of pcap_t structure is made due to pcap.h man pages
-    if(pcap_lookupnet(settings.iname, &net, &mask, err_buff) < 0) {
-        std::cerr << "Unable to find '" << settings.iname << "'! ";
-        std::cerr << err_buff << std::endl;
-        bad_interface_abort(interfaces);
-    }
-
-    pcap_t *pcap_ptr = pcap_open_live(settings.iname, BUFSIZ, 
-                                      PCAP_OPENFLAG_PROMISCUOUS, 1000, 
-                                      err_buff);
-    if(!pcap_ptr) {
-        std::cerr << "Error while opening: " << err_buff << std::endl;
-        safe_exit(EXIT_FAILURE);
-    }
-
-    free_resources(true, interfaces, pcap_ptr);
-
-    std::string filter_str;
-    create_filter_str(&filter_str, &settings);
-    //std::cout << filter_str << std::endl << std::flush;
-
-    if(pcap_compile(pcap_ptr, &filter, filter_str.c_str(), 0, net) < 0) {
-        std::cerr << "Error while compiling filter! ";
-        std::cerr << pcap_geterr(pcap_ptr) << std::endl;
-        safe_exit(EXIT_FAILURE);
-    }
-
-    if(pcap_setfilter(pcap_ptr, &filter) < 0) {
-        std::cerr << "Error while setting filter! ";
-        std::cerr << pcap_geterr(pcap_ptr) << std::endl;
-        safe_exit(EXIT_FAILURE);
-    }
+    pcap_t *pcap_ptr;
+    init_pcap(&pcap_ptr, &settings, err_buff, interfaces);
 
     for(int frame_cnt = 0; true; frame_cnt++) { //TODO
         sniff_packet(pcap_ptr);
     }
-
 
     safe_exit(EXIT_SUCCESS);
 }
