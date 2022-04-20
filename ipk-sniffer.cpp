@@ -88,7 +88,8 @@ typedef enum {
     ICMP = 1,
     TCP = 6,
     UDP = 17,
-} transport_prot_t;
+    ICMP6 = 58,
+} protocol_num_t;
 
 
 #define IPV4_PROLOG_SIZE 8 //The amount of first bytes in ipv4 header that are not parsed
@@ -114,7 +115,7 @@ typedef struct ipv4_hdr {
  */
 typedef struct ipv6_hdr {
     const u_char prolog[IPV6_PROLOG_SIZE];
-    const u_char next_hdr;
+    const u_char next_hdr; /**< Next header field */
     const u_char max_hops;
     const u_char src_addr[IPV6_ADDR_SIZE];
     const u_char dst_addr[IPV6_ADDR_SIZE];
@@ -492,6 +493,8 @@ void print_line_as_chars(const u_char *pkt, size_t line_cnt, size_t cur_byte) {
  * @param hdr Pointer to pointer to structure, that should be filled
  * @return true Parsing if probably done correctly (depends on start index and used structure)
  * @return false There are not enough bytes to fill the structure (probably bad structure was chosen)
+ * 
+ * IMPORTANT: The idea of mapping structure to the packet for easier parsing was taken from 
  */
 template <typename HDR_TYPE>
 bool get_hdr(size_t *start, size_t len, const u_char *frame, HDR_TYPE **hdr) {
@@ -657,6 +660,8 @@ void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
  * @brief Converts setting structure to string containing filter to be compiled with pcap library
  * @param filter_str Ouput string, that is erased and filled with filter
  * @param settings Structure to be converted (typicaly got by parsing of arguments)
+ * 
+ * IMPORTANT: The know how of creation of "filter strings" was taken from man pages of pcap-filter (7) 
  */
 void create_filter_str(std::string *filter_str, settings_t *settings) {
     filter_str->clear();
@@ -687,7 +692,7 @@ void create_filter_str(std::string *filter_str, settings_t *settings) {
  */
 void dump_pkt(pcap_pkthdr *pkt_header, const u_char *pkt) {
     size_t i = 0, line_cnt = i;
-    for(; i < pkt_header->len; i++, line_cnt++) {
+    for(; i < pkt_header->caplen; i++, line_cnt++) {
         if(line_cnt % LINE_LEN == 0) {
             if(i > 0) {
                 print_line_as_chars(pkt, line_cnt, i); /**< After each line, bytes are printed in ASCII */
@@ -870,6 +875,8 @@ void termination_handler(int signal_number) {
  * @param err_buff Buffer for error messaged
  * @param interfaces Pointer to linked list with interfaces
  * @note If any part of initialization is not succesfull, program is ended and error msg is printed
+ * 
+ * IMPORTANT: The way how is pcap handle (pcap_ptr) initialized was taken from https://www.tcpdump.org/pcap.html
  */
 void init_pcap(pcap_t **pcap_ptr, settings_t *settings, 
                char *err_buff, pcap_if_t *interfaces) {
@@ -887,14 +894,16 @@ void init_pcap(pcap_t **pcap_ptr, settings_t *settings,
         bad_interface_abort(interfaces);
     }
 
+    //Setting the "wise" timeout (1s) to prevent waking up too oftenly
     *pcap_ptr = pcap_open_live(settings->iname, BUFSIZ, 
-                               PCAP_OPENFLAG_PROMISCUOUS, 1000, 
+                               PCAP_OPENFLAG_PROMISCUOUS, 1000,
                                err_buff);
-    if(!pcap_ptr) {
+    if(!(*pcap_ptr)) {
         std::cerr << "Error while opening: " << err_buff << std::endl;
         safe_exit(EXIT_FAILURE);
     }
 
+    //Register resources (pcap handle) to free it when program is terminated
     free_resources(true, interfaces, *pcap_ptr);
 
     //Filter creation
@@ -932,6 +941,7 @@ int main(int argc, char* argv[]) {
     parse_ops(argc, argv, &settings, interfaces);
 
     pcap_t *pcap_ptr;
+    
     init_pcap(&pcap_ptr, &settings, err_buff, interfaces);
 
     for(int frame_cnt = 0; true; frame_cnt++) { //TODO
