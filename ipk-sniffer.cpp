@@ -4,7 +4,7 @@
  *                              Packet sniffer                                *
  *                                                                            *
  *                      Author: Vojtech Dvorak (xdvora3o)                     *
- *                                                                            *
+ *                                   2022                                     *
  * ***************************************************************************/
 
 
@@ -33,11 +33,23 @@
 
 #define MAC_ADDR_SIZE 6 //Size of field with MAC adress in bytes
 
-#define IPV4_ADDR_SIZE 4  //Size of field with IPV4 adress in bytes
+#define IPV4_ADDR_SIZE 4  //Size of field with IPv4 adress in bytes
 
-#define IPV6_ADDR_SIZE 16  //Size of field with IPV6 adress in bytes
+#define IPV6_ADDR_SIZE 16  //Size of field with IPv6 adress in bytes
 
 #define T_BUFF_SIZE 128 //Size of temporary buffer for converting timestamp to string
+
+/**
+ * @brief 65575 bytes should enough for all frames
+ * according to source http://recursos.aldabaknocking.com/libpcapHakin9LuisMartinGarcia.pdf
+ * and more - it makes sense, because 18 (eth. header) + 32 (ipv6 hdr) + 65535 (max size of ipv6 datag.)
+ * (excluding jumbograms)
+ */
+#define MAX_FRAME_SIZE 65575 
+
+
+
+#define MAX_PORT_NUM 65535 //Maximum integer value, that can represent port number
 
 
 /**
@@ -82,7 +94,7 @@ typedef struct eth_frame_hdr {
 /**
  * @brief Enumeration of chosen numbers, that specify transport protocol
  * @note These numbers can be find in proto field (IPv4) or next_header (IPv6)
- * @see https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+ * @see https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml or RFC7042
  */
 typedef enum {
     ICMP = 1,
@@ -92,14 +104,15 @@ typedef enum {
 } protocol_num_t;
 
 
-#define IPV4_PROLOG_SIZE 8 //The amount of first bytes in ipv4 header that are not parsed
+#define IPV4_OTHER_BYTES 7 //The amount of bytes in ipv4 header that are not parsed
 
 /**
  * @brief Represents ipv4 header and its fields (implemented according to @see RFC791 )
  * @note For easier parsing of sniffed frame
  */
 typedef struct ipv4_hdr {
-    const u_char prolog[IPV4_PROLOG_SIZE];
+    const u_char version_and_ihl; /**< Version and IHL in one byte */
+    const u_char prolog[IPV4_OTHER_BYTES];
     const u_char ttl;
     const u_char protocol;
     const u_short checksum;
@@ -111,7 +124,7 @@ typedef struct ipv4_hdr {
 #define IPV6_PROLOG_SIZE 6 //The amount of first bytes in ipv6 header that are not parsed
  
 /**
- * @brief Represents ipv6 header and its fields ( @see RFC 2460 )
+ * @brief Represents ipv6 header and its fields ( @see RFC8200 )
  */
 typedef struct ipv6_hdr {
     const u_char prolog[IPV6_PROLOG_SIZE];
@@ -123,22 +136,41 @@ typedef struct ipv6_hdr {
 
 
 /**
- * @brief Contains all important fields of TCP header ( @see RFC 793 ) 
+ * @brief Contains all important fields of TCP header ( @see RFC793 ) 
  */
 typedef struct tcp_hdr {
     const u_short src_port;
     const u_short dst_port;
-    const u_char* rest;
+    int32_t seq_num;
+    int32_t ack_num;
+    //There are also other information, but they are not significant according to assignment
 } tcp_hdr_t;
 
 /**
- * @brief Contains all important field of UDP header ( @see RFC 768 ) 
+ * @brief Contains all important fields of UDP header ( @see RFC768 ) 
  */
 typedef struct udp_hdr {
     const u_short src_port;
     const u_short dst_port;
-    const u_char* rest;
+    //...
 } udp_hdr_t;
+
+
+/**
+ * @brief Prints brief help to stdout and end program with 0
+ */
+void print_help()
+{
+    std::cout << "Packet Sniffer " << std::endl;
+    std::cout << "============== " << std::endl;
+    std::cout << "Program for capturing and filtering packets on given interface" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Usage:" << std::endl;
+    std::cout << "./ipk-sniffer [-i if_name | --interface if_name] {-p ­­port} " << std::endl;
+    std::cout << "{[--tcp|-t] [--udp|-u] [--arp] [--icmp] } {-n num} {--help|-h}" << std::endl;
+    std::cout <<  std::endl;
+    safe_exit(EXIT_SUCCESS);
+}
 
 
 /**
@@ -169,7 +201,6 @@ void free_resources(bool reg_mode, pcap_if_t *ifs, pcap_t *pcap_ptr) {
 
 /**
  * @brief Get pointer to first element of linked list with interfaces
- * @todo It should get only active interfaces
  * @param interfaces Pointer to pointer, that will be filled with address of first interface structure
  * @param error_buff Pointer to error buffer to store error msg
  * @return int EXIT_SUCCESS or EXIT_FAILURE
@@ -241,7 +272,7 @@ unsigned int get_port_number(char *port_num_param) {
         safe_exit(EXIT_FAILURE);
     }
 
-    if(port_num < 0 || port_num > 65536) {
+    if(port_num < 0 || port_num > MAX_PORT_NUM) {
         std::cerr << "Parameter of -p option must be valid port number!" << std::endl;
         safe_exit(EXIT_FAILURE);
     }
@@ -342,6 +373,10 @@ void update_general_settings(settings_t *settings) {
  * @param sets Setting structure
  * @param ifs Linked list with interfaces
  * @note If unrecognized option is found program is ended by calling unrecognized_option_abort
+ * 
+ * IMPORTANT: For implementation of this function was used example 
+ * from https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
+ * (it was used as template for processing of options)
  */
 void resolve_option(int opt, char** argv, settings_t *sets, pcap_if_t *ifs) {
     switch (opt)
@@ -375,6 +410,10 @@ void resolve_option(int opt, char** argv, settings_t *sets, pcap_if_t *ifs) {
         sets->protocols[ICMP_INDEX] = true;
         break;
 
+    case 'h':
+        print_help();
+        break;
+
     default:
         unrecognized_option_abort(argv, ifs);
     }
@@ -388,6 +427,10 @@ void resolve_option(int opt, char** argv, settings_t *sets, pcap_if_t *ifs) {
  * @param argv Argument vector (from main)
  * @param settings Settings structure, that should be modified
  * @param ifs Pointer to linked list with interfaces
+ * 
+ * IMPORTANT: For implementation of this function was used example 
+ * from https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Option-Example.html
+ * (it was used like template for processing of options)
  */
 void parse_ops(int argc, char** argv, settings_t *settings, pcap_if_t *ifs) {
     //Accepted long options
@@ -397,11 +440,12 @@ void parse_ops(int argc, char** argv, settings_t *settings, pcap_if_t *ifs) {
         {"udp", no_argument, NULL, 'u'},
         {"arp", no_argument, NULL, 'a'},
         {"icmp", no_argument, NULL, '$'},
-        {0, 0, NULL, 0}
+        {"help", no_argument, NULL, 'h'},
+        {0, 0, 0, 0}
     };
 
     //Accepted short options
-    const static char *s_opts = "i:p:tun:";
+    const static char *s_opts = "i:p:tun:h";
 
     opterr = 0;
     int opt, opt_index;
@@ -494,7 +538,12 @@ void print_line_as_chars(const u_char *pkt, size_t line_cnt, size_t cur_byte) {
  * @return true Parsing if probably done correctly (depends on start index and used structure)
  * @return false There are not enough bytes to fill the structure (probably bad structure was chosen)
  * 
- * IMPORTANT: The idea of mapping structure to the packet for easier parsing was taken from 
+ * @warning it increases start index only by length of used structure, notice that it can be inaccurate
+ * approach (e.g. in IPv4 there is IHL field)
+ * 
+ * IMPORTANT: The idea of mapping structure to the packet for easier parsing of packets was taken 
+ * from https://gauravsarma1992.medium.com/packet-sniffer-and-parser-in-c-c86070081c38
+ * (see doc for accurate info about this source)
  */
 template <typename HDR_TYPE>
 bool get_hdr(size_t *start, size_t len, const u_char *frame, HDR_TYPE **hdr) {
@@ -601,9 +650,9 @@ void print_header_info(pcap_pkthdr *pkt_header, eth_frame_hdr_t *eth_hdr) {
     std::cout << "frame len: " << std::dec << pkt_header->len << std::endl;
 
     //Additional information about ethertype
-    std::cout << "ethertype.: "; //TODO
-    print_as_hex(ntohs(eth_hdr->type), true, sizeof(short));
-    std::cout << std::endl;
+    //std::cout << "ethertype.: "; 
+    //print_as_hex(ntohs(eth_hdr->type), true, sizeof(short));
+    //std::cout << std::endl;
 }
 
 
@@ -661,7 +710,8 @@ void setting_to_str(std::string *filter_str, settings_t *settings, size_t i) {
  * @param filter_str Ouput string, that is erased and filled with filter
  * @param settings Structure to be converted (typicaly got by parsing of arguments)
  * 
- * IMPORTANT: The know how of creation of "filter strings" was taken from man pages of pcap-filter (7) 
+ * IMPORTANT: The know how of creation of "filter strings" was taken from man pages of pcap-filter (7),
+ * and from http://recursos.aldabaknocking.com/libpcapHakin9LuisMartinGarcia.pdf
  */
 void create_filter_str(std::string *filter_str, settings_t *settings) {
     filter_str->clear();
@@ -713,8 +763,7 @@ void dump_pkt(pcap_pkthdr *pkt_header, const u_char *pkt) {
     print_padding(i);
     print_line_as_chars(pkt, line_cnt, i);
 
-    std::cout << std::endl;
-    std::cout << std::endl;
+    std::cout << std::endl << std::endl << std::endl; /**< Two blank lines fter each packet */
 }
 
 
@@ -732,14 +781,17 @@ void print_port(const u_short port_num) {
  * @brief Prints details included in IPv4 header and optionally in other headers of higher layers
  * @param start_index Index where IPv4 header should start
  * @param flen Frame length
- * @param pkt Pointer to arra with frame content
+ * @param pkt Pointer to array with frame content
  */
 void print_ipv4_details(size_t *start_index, size_t flen, const u_char *pkt) {
     ipv4_hdr_t *ipv4_header;
 
     if(get_hdr<ipv4_hdr_t>(start_index, flen, pkt, &ipv4_header)) {
-        std::cout << "ipv4 protocol: "; //TODO
-        print_as_hex(ipv4_header->protocol, false, sizeof(char));
+        int ipv4_len = (int)(ipv4_header->version_and_ihl & 0x0F); /**< Getting second fourth bits from field with version and IHL */
+        *start_index += 4*ipv4_len - sizeof(ipv4_hdr_t); /**< get_hdr increases start index by size of structure + we must multiply IHL by 4 (it is length in 32-bit words)*/
+
+        std::cout << "type of service: "; 
+        std::cout << (htons((u_short)ipv4_header->protocol) >> 8);
         std::cout << std::endl;
 
         std::cout << std::dec << "src IP: ";
@@ -779,14 +831,14 @@ void print_ipv4_details(size_t *start_index, size_t flen, const u_char *pkt) {
  * @brief Prints details included in IPv6 header and optionally in other headers of higher layers
  * @param start_index Index where IPv6 header should start
  * @param flen Frame length
- * @param pkt Pointer to arra with frame content
+ * @param pkt Pointer to array with frame content
  */
 void print_ipv6_details(size_t *start_index, size_t flen, const u_char *pkt) {
     ipv6_hdr_t *ipv6_header;
 
     if(get_hdr<ipv6_hdr_t>(start_index, flen, pkt, &ipv6_header)) {
-        std::cout << "ipv6 protocol: "; //TODO
-        print_as_hex(ipv6_header->next_hdr, false, sizeof(char));
+        std::cout << "next header: "; 
+        std::cout << (htons((u_short)ipv6_header->next_hdr) >> 8);
         std::cout << std::endl;
 
         std::cout << std::dec << "src IP: ";
@@ -849,6 +901,8 @@ void sniff_packet(pcap_t *pcap_ptr) {
         else if(ether_type == IPV6) {
             print_ipv6_details(&start_index, frame_len, pkt);
         }
+
+        std::cout << std::endl;
     }   
 
     dump_pkt(&pkt_header, pkt);
@@ -876,7 +930,9 @@ void termination_handler(int signal_number) {
  * @param interfaces Pointer to linked list with interfaces
  * @note If any part of initialization is not succesfull, program is ended and error msg is printed
  * 
- * IMPORTANT: The way how is pcap handle (pcap_ptr) initialized was taken from https://www.tcpdump.org/pcap.html
+ * IMPORTANT: The way how is pcap handle (pcap_ptr) initialized was taken with modifications
+ * from http://recursos.aldabaknocking.com/libpcapHakin9LuisMartinGarcia.pdf
+ * (see doc for accurate info about this sources)
  */
 void init_pcap(pcap_t **pcap_ptr, settings_t *settings, 
                char *err_buff, pcap_if_t *interfaces) {
@@ -895,7 +951,7 @@ void init_pcap(pcap_t **pcap_ptr, settings_t *settings,
     }
 
     //Setting the "wise" timeout (1s) to prevent waking up too oftenly
-    *pcap_ptr = pcap_open_live(settings->iname, BUFSIZ, 
+    *pcap_ptr = pcap_open_live(settings->iname, MAX_FRAME_SIZE, 
                                PCAP_OPENFLAG_PROMISCUOUS, 1000,
                                err_buff);
     if(!(*pcap_ptr)) {
@@ -944,7 +1000,7 @@ int main(int argc, char* argv[]) {
     
     init_pcap(&pcap_ptr, &settings, err_buff, interfaces);
 
-    for(int frame_cnt = 0; true; frame_cnt++) { //TODO
+    for(size_t frame_cnt = 0; frame_cnt < settings.num; frame_cnt++) {
         sniff_packet(pcap_ptr);
     }
 
