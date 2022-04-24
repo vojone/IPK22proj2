@@ -156,6 +156,9 @@ typedef struct udp_hdr {
 } udp_hdr_t;
 
 
+void safe_exit(int exit_code);
+
+
 /**
  * @brief Prints brief help to stdout and end program with 0
  */
